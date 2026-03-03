@@ -1,0 +1,174 @@
+
+CONTEXT
+FLARE
+SHARE
+Share with Flare
+Docs
+
+STACK
+
+CONTEXT
+
+DEBUG
+CREATE SHARE
+DOCS
+
+Ignition Settings
+Docs
+EDITOR
+
+
+THEME
+
+
+
+Auto
+SAVE SETTINGS
+Settings will be saved locally in ~/.ignition.json.
+SQLSTATE[HY000]: General error: 1 no such table: tasks (Connection: sqlite, SQL: select * from "tasks" order by "created_at" desc)
+Illuminate
+ \ 
+Database
+ \ 
+QueryException
+PHP 8.2.0RC7
+10.50.2
+SQLSTATE[HY000]: General error: 1 no such table: tasks
+SELECT * FROM "tasks" ORDER BY "created_at" DESC
+
+
+
+
+Expand vendor frames
+9 vendor frames
+App
+ \ 
+Http
+ \ 
+Controllers
+ \ 
+TaskController
+ 
+: 15
+index
+43 vendor frames
+public
+ / 
+index
+.php
+ 
+: 51
+require_once
+1 vendor frame
+app
+ / 
+Http
+ / 
+Controllers
+ / 
+TaskController
+.php
+ 
+: 15
+
+<?php
+
+
+
+namespace App\Http\Controllers;
+
+
+
+use App\Models\Task;
+
+use Illuminate\Http\Request;
+
+
+
+class TaskController extends Controller
+
+{
+
+    /**
+
+     * Display a listing of the resource.
+
+     */
+
+    public function index()
+
+    {
+
+        $tasks = Task::latest()->get();
+
+        return view('tasks.index', compact('tasks'));
+
+    }
+
+
+
+    /**
+
+     * Show the form for creating a new resource.
+
+     */
+
+    public function create()
+
+    {
+
+        return view('tasks.create');
+
+    }
+
+
+
+    /**
+
+     * Store a newly created resource in storage.
+
+     */
+
+    public function store(Request $request)
+ARGUMENTS
+$columns:array
+[
+    "*"
+]
+
+APP
+Routing
+
+Controller
+App\Http\Controllers\TaskController@index
+
+Route name
+tasks.index
+
+Middleware
+web
+
+REQUEST
+http://6f07c584-f812-427c-956a-6a8b9c143c22-00-1m0oknmr6yn2.sisko.replit.dev/tasks
+GET
+curl "http://6f07c584-f812-427c-956a-6a8b9c143c22-00-1m0oknmr6yn2.sisko.replit.dev/tasks" \
+   -X GET \
+   -H 'host: 6f07c584-f812-427c-956a-6a8b9c143c22-00-1m0oknmr6yn2.sisko.replit.dev' \
+   -H 'user-agent: Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Replit-Bonsai/2.170.0 (iOS 26.2.1)' \
+   -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+   -H 'accept-encoding: gzip, deflate, br' \
+   -H 'accept-language: en-GB,en;q=0.9' \
+   -H 'cookie: <CENSORED>' \
+   -H 'referer: https://6f07c584-f812-427c-956a-6a8b9c143c22-00-1m0oknmr6yn2.sisko.replit.dev/' \
+   -H 'sec-fetch-dest: document' \
+   -H 'sec-fetch-mode: navigate' \
+   -H 'sec-fetch-site: none' \
+   -H 'x-forwarded-for: 45.250.246.117, 10.84.4.4' \
+   -H 'x-forwarded-proto: https';
+
+
+Browser
+
+Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Replit-Bonsai/2.170.0 (iOS 26.2.1)
+
+Headers
