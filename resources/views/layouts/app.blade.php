@@ -6,15 +6,10 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>@yield('title', 'TaskFlow')</title>
-
-    {{-- Local assets - download these once in iSH (see README) --}}
     <link href="/css/daisyui-themes.css" rel="stylesheet">
     <link href="/css/daisyui.css" rel="stylesheet">
     <script src="/js/tailwind.js"></script>
-
-    {{-- Fonts: loads if online, falls back to system fonts offline --}}
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-
     <style>
         body { font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif; }
         .mono { font-family: 'DM Mono', ui-monospace, monospace; }

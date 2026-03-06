@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <title>TaskFlow</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<link href="/css/daisyui-themes.css" rel="stylesheet">
+<link href="/css/daisyui.css" rel="stylesheet">
+<script src="/js/tailwind.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'DM Sans', sans-serif; }
@@ -69,7 +70,7 @@
         </h1>
 
         <p class="fade-up-2 text-base-content/60 text-lg font-light max-w-xs leading-relaxed mb-10">
-            Simple, focused task management.<br>Stay on top of what matters.
+            Test Task Management PWA.<br>With NativePHP & Jump
         </p>
 
         <div class="fade-up-3 flex flex-wrap gap-2 justify-center mb-10">
@@ -116,6 +117,6 @@
         </p>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+<script src="/js/alpine.js" defer></script>
 </body>
 </html>

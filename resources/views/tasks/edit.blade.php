@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <title>Edit Task · TaskFlow</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="/css/daisyui-themes.css" rel="stylesheet">
+    <link href="/css/daisyui.css" rel="stylesheet">
+    <script src="/js/tailwind.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'DM Sans', sans-serif; }
@@ -27,7 +28,6 @@
     x-init="$el.closest('html').setAttribute('data-theme', theme)"
     x-cloak>
 
-    <!-- Navbar -->
     <div class="navbar glass-nav bg-base-100/80 sticky top-0 z-50 border-b border-base-300/50 px-2">
         <div class="navbar-start">
             <a href="{{ route('tasks.index') }}" class="btn btn-ghost btn-sm btn-circle">
@@ -95,7 +95,6 @@
                     >{{ old('description', $task->description) }}</textarea>
                 </div>
 
-                <!-- Completed toggle -->
                 <div class="form-control">
                     <label class="label cursor-pointer justify-start gap-4 py-3 px-4 rounded-xl bg-base-200/50 hover:bg-base-200 transition-colors">
                         <input type="hidden" name="completed" value="0">
@@ -124,6 +123,6 @@
         </form>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+    <script src="/js/alpine.js" defer></script>
 </body>
 </html>

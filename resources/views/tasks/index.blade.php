@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <title>My Tasks · TaskFlow</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="/css/daisyui-themes.css" rel="stylesheet">
+    <link href="/css/daisyui.css" rel="stylesheet">
+    <script src="/js/tailwind.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'DM Sans', sans-serif; }
@@ -48,7 +49,6 @@
 
     <div class="max-w-lg mx-auto px-4 py-5">
 
-        <!-- Page header -->
         <div class="mb-5">
             <h1 class="text-2xl font-bold">My Tasks</h1>
             <p class="text-base-content/50 text-sm mt-0.5">
@@ -58,7 +58,6 @@
             </p>
         </div>
 
-        <!-- Success toast -->
         @if ($message = Session::get('success'))
             <div class="alert alert-success mb-4 shadow-sm" x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 3000)" x-transition>
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
@@ -66,7 +65,6 @@
             </div>
         @endif
 
-        <!-- Tasks list -->
         @forelse ($tasks as $task)
             <div class="task-card card bg-base-100 shadow-sm border border-base-300/50 mb-3 hover:border-primary/30 transition-all duration-200">
                 <div class="card-body py-4 px-4">
@@ -120,13 +118,12 @@
         @endforelse
     </div>
 
-    <!-- FAB -->
     <div class="fixed bottom-6 right-6 z-40">
         <a href="{{ route('tasks.create') }}" class="btn btn-primary btn-circle w-14 h-14 shadow-xl shadow-primary/30 text-xl">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" /></svg>
         </a>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+    <script src="/js/alpine.js" defer></script>
 </body>
 </html>
