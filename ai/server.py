@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 TaskFlow AI Server
-Naive Bayes classifier trained on your tasks.
+- Task completion predictor (Naive Bayes)
+- Trivia game AI (neural-inspired with online learning)
 Runs on 127.0.0.1:5001
 """
 
@@ -10,6 +11,7 @@ import math
 import sqlite3
 import os
 import re
+import random
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -22,6 +24,10 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+# ─────────────────────────────────────────────
+# TASK AI - Naive Bayes
+# ─────────────────────────────────────────────
 
 def tokenize(text):
     if not text:
@@ -45,7 +51,6 @@ class NaiveBayes:
         self.word_counts = {'completed': {}, 'pending': {}}
         self.vocab = set()
         self.total_docs = len(tasks)
-
         for task in tasks:
             label = 'completed' if task['completed'] else 'pending'
             self.class_counts[label] += 1
@@ -58,7 +63,6 @@ class NaiveBayes:
         tokens = tokenize(text)
         scores = {}
         vocab_size = len(self.vocab) or 1
-
         for label in ['completed', 'pending']:
             count = self.class_counts.get(label, 0)
             if self.total_docs == 0 or count == 0:
@@ -70,9 +74,7 @@ class NaiveBayes:
                 word_count = self.word_counts[label].get(token, 0) + 1
                 score += math.log(word_count / total_words)
             scores[label] = score
-
         best = max(scores, key=scores.get)
-        # Convert to probability-like confidence 0-100
         diff = scores['completed'] - scores['pending']
         confidence = min(100, max(0, int(50 + (diff * 10))))
         return {
@@ -85,18 +87,8 @@ class NaiveBayes:
         total = len(tasks)
         completed = sum(1 for t in tasks if t['completed'])
         pending = total - completed
-
-        # Top words for completed tasks
-        top_completed = sorted(
-            self.word_counts.get('completed', {}).items(),
-            key=lambda x: x[1], reverse=True
-        )[:5]
-
-        top_pending = sorted(
-            self.word_counts.get('pending', {}).items(),
-            key=lambda x: x[1], reverse=True
-        )[:5]
-
+        top_completed = sorted(self.word_counts.get('completed', {}).items(), key=lambda x: x[1], reverse=True)[:5]
+        top_pending = sorted(self.word_counts.get('pending', {}).items(), key=lambda x: x[1], reverse=True)[:5]
         return {
             'total_tasks': total,
             'completed': completed,
@@ -108,8 +100,7 @@ class NaiveBayes:
         }
 
 
-# Global model instance
-model = NaiveBayes()
+task_model = NaiveBayes()
 
 
 def load_and_train():
@@ -118,17 +109,141 @@ def load_and_train():
         tasks = conn.execute('SELECT title, description, completed FROM tasks').fetchall()
         conn.close()
         task_list = [dict(t) for t in tasks]
-        model.train(task_list)
+        task_model.train(task_list)
         return task_list
     except Exception as e:
         print(f"Training error: {e}")
         return []
 
 
+# ─────────────────────────────────────────────
+# TRIVIA AI - Neural-inspired online learning
+# ─────────────────────────────────────────────
+
+def ensure_trivia_tables():
+    conn = get_db()
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS trivia_ai_model (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            feature TEXT UNIQUE,
+            weight REAL DEFAULT 0.5,
+            observations INTEGER DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS trivia_user_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_id INTEGER,
+            difficulty TEXT,
+            user_correct INTEGER,
+            user_steal INTEGER,
+            game_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+class TriviaAI:
+    def __init__(self):
+        ensure_trivia_tables()
+
+    def get_weight(self, feature, default=0.5):
+        conn = get_db()
+        row = conn.execute('SELECT weight FROM trivia_ai_model WHERE feature = ?', (feature,)).fetchone()
+        conn.close()
+        return row['weight'] if row else default
+
+    def update_weight(self, feature, new_observation, learning_rate=0.1):
+        conn = get_db()
+        existing = conn.execute('SELECT weight, observations FROM trivia_ai_model WHERE feature = ?', (feature,)).fetchone()
+        if existing:
+            old_weight = existing['weight']
+            obs = existing['observations']
+            new_weight = old_weight * (1 - learning_rate) + new_observation * learning_rate
+            conn.execute(
+                'UPDATE trivia_ai_model SET weight = ?, observations = ?, updated_at = CURRENT_TIMESTAMP WHERE feature = ?',
+                (new_weight, obs + 1, feature)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO trivia_ai_model (feature, weight, observations) VALUES (?, ?, 1)',
+                (feature, new_observation)
+            )
+        conn.commit()
+        conn.close()
+
+    def predict_user_correct(self, difficulty, question_id):
+        defaults = {'easy': 0.7, 'medium': 0.5, 'hard': 0.3, 'custom': 0.5}
+        base = self.get_weight(f'user_accuracy_{difficulty}', defaults.get(difficulty, 0.5))
+        q_weight = self.get_weight(f'question_{question_id}_user_correct', base)
+        return base * 0.7 + q_weight * 0.3
+
+    def decide_ai_answer(self, question_id, difficulty):
+        defaults = {'easy': 0.8, 'medium': 0.6, 'hard': 0.4, 'custom': 0.55}
+        ai_accuracy = self.get_weight(f'ai_accuracy_{difficulty}', defaults.get(difficulty, 0.55))
+        known = self.get_weight(f'question_{question_id}_correct_answer_known', 0.0)
+        conn = get_db()
+        q = conn.execute('SELECT correct_answer FROM trivia_questions WHERE id = ?', (question_id,)).fetchone()
+        conn.close()
+        if not q:
+            return random.choice(['a', 'b', 'c', 'd'])
+        correct = q['correct_answer']
+        if known > 0.9 or random.random() < ai_accuracy:
+            return correct
+        wrong = [x for x in ['a', 'b', 'c', 'd'] if x != correct]
+        return random.choice(wrong)
+
+    def decide_steal(self, difficulty, question_id, predicted_user_correct):
+        steal_threshold = self.get_weight(f'ai_steal_threshold_{difficulty}', 0.65)
+        steal_profitability = self.get_weight('ai_steal_profitability', 0.5)
+        adjusted = steal_threshold * (1.2 - steal_profitability * 0.4)
+        adjusted = max(0.4, min(0.85, adjusted))
+        return predicted_user_correct > adjusted
+
+    def learn(self, question_id, difficulty, user_correct, user_steal, game_id):
+        conn = get_db()
+        conn.execute('''
+            INSERT INTO trivia_user_history (question_id, difficulty, user_correct, user_steal, game_id)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (question_id, difficulty, int(user_correct), int(user_steal), game_id))
+        conn.commit()
+        conn.close()
+        self.update_weight(f'user_accuracy_{difficulty}', 1.0 if user_correct else 0.0)
+        self.update_weight(f'question_{question_id}_user_correct', 1.0 if user_correct else 0.0)
+        self.update_weight(f'user_steal_rate_{difficulty}', 1.0 if user_steal else 0.0)
+        self.update_weight(f'question_{question_id}_correct_answer_known', 1.0, learning_rate=0.3)
+
+    def get_stats(self):
+        conn = get_db()
+        history = conn.execute('SELECT * FROM trivia_user_history').fetchall()
+        weights = conn.execute('SELECT * FROM trivia_ai_model').fetchall()
+        conn.close()
+        total = len(history)
+        correct = sum(1 for h in history if h['user_correct'])
+        steals = sum(1 for h in history if h['user_steal'])
+        return {
+            'total_rounds_played': total,
+            'user_correct_total': correct,
+            'user_accuracy_overall': round(correct / total * 100, 1) if total > 0 else 0,
+            'user_steal_total': steals,
+            'learned_weights': len(weights),
+        }
+
+
+trivia_ai = TriviaAI()
+
+
+# ─────────────────────────────────────────────
+# HTTP HANDLER
+# ─────────────────────────────────────────────
+
 class AIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        pass  # Suppress default logging
+        pass
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -149,15 +264,11 @@ class AIHandler(BaseHTTPRequestHandler):
 
         elif path == '/train':
             tasks = load_and_train()
-            self.send_json({
-                'status': 'trained',
-                'tasks_used': len(tasks)
-            })
+            self.send_json({'status': 'trained', 'tasks_used': len(tasks)})
 
         elif path == '/stats':
             tasks = load_and_train()
-            stats = model.get_stats(tasks)
-            self.send_json(stats)
+            self.send_json(task_model.get_stats(tasks))
 
         elif path == '/predict':
             text = params.get('text', [''])[0]
@@ -168,7 +279,7 @@ class AIHandler(BaseHTTPRequestHandler):
             if not tasks:
                 self.send_json({'error': 'No tasks to train on yet'}, 400)
                 return
-            result = model.predict(text)
+            result = task_model.predict(text)
             result['text'] = text
             self.send_json(result)
 
@@ -179,21 +290,42 @@ class AIHandler(BaseHTTPRequestHandler):
                 'SELECT id, title, description FROM tasks WHERE completed = 0 ORDER BY created_at ASC'
             ).fetchall()
             conn.close()
-
             suggestions = []
             for task in pending:
                 text = (task['title'] or '') + ' ' + (task['description'] or '')
-                pred = model.predict(text)
+                pred = task_model.predict(text)
                 suggestions.append({
                     'id': task['id'],
                     'title': task['title'],
                     'completion_likelihood': pred['completion_likelihood'],
                     'prediction': pred['prediction']
                 })
-
-            # Sort by completion likelihood descending
             suggestions.sort(key=lambda x: x['completion_likelihood'], reverse=True)
             self.send_json({'suggestions': suggestions})
+
+        elif path == '/trivia/decide':
+            question_id = int(params.get('question_id', [0])[0])
+            difficulty = params.get('difficulty', ['medium'])[0]
+            predicted = trivia_ai.predict_user_correct(difficulty, question_id)
+            ai_answer = trivia_ai.decide_ai_answer(question_id, difficulty)
+            ai_steal = trivia_ai.decide_steal(difficulty, question_id, predicted)
+            self.send_json({
+                'ai_answer': ai_answer,
+                'ai_steal': ai_steal,
+                'predicted_user_correct': round(predicted, 2),
+            })
+
+        elif path == '/trivia/learn':
+            question_id = int(params.get('question_id', [0])[0])
+            difficulty = params.get('difficulty', ['medium'])[0]
+            user_correct = params.get('user_correct', ['0'])[0] == '1'
+            user_steal = params.get('user_steal', ['0'])[0] == '1'
+            game_id = int(params.get('game_id', [0])[0])
+            trivia_ai.learn(question_id, difficulty, user_correct, user_steal, game_id)
+            self.send_json({'status': 'learned'})
+
+        elif path == '/trivia/stats':
+            self.send_json(trivia_ai.get_stats())
 
         else:
             self.send_json({'error': 'Not found'}, 404)
@@ -207,6 +339,6 @@ class AIHandler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     print(f"TaskFlow AI server starting on port {PORT}...")
     load_and_train()
-    print("Model trained. Ready.")
+    print("Task model trained. Trivia AI ready.")
     server = HTTPServer(('127.0.0.1', PORT), AIHandler)
     server.serve_forever()
