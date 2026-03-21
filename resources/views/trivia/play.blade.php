@@ -95,10 +95,8 @@
 
     <button type="submit"
         class="btn btn-primary w-full"
-        :disabled="!selected || steal === null || submitted"
-        x-on:click="submitted = true">
-        <span x-show="!submitted">Submit Answer</span>
-        <span x-show="submitted">Revealing...</span>
+        :disabled="!selected || steal === null">
+        Submit Answer
     </button>
 </form>
 
