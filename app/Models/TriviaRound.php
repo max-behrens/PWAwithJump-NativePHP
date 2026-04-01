@@ -9,7 +9,8 @@ class TriviaRound extends Model
     protected $fillable = [
         'game_id',
         'question_id',
-        'round_number',
+        'game_round',
+        'question_number',
         'user_answer',
         'ai_answer',
         'user_steal',
@@ -18,6 +19,8 @@ class TriviaRound extends Model
         'ai_correct',
         'user_points_earned',
         'ai_points_earned',
+        'base_score',
+        'ai_strategy',
     ];
 
     protected $casts = [

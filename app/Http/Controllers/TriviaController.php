@@ -6,7 +6,7 @@ use App\Models\TriviaGame;
 use App\Models\TriviaQuestion;
 use App\Models\TriviaRound;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class TriviaController extends Controller
 {
@@ -14,19 +14,21 @@ class TriviaController extends Controller
 
     private function aiRequest(string $path, array $params = []): array
     {
+        $url = $this->aiBase . $path;
+        if ($params) {
+            $url .= '?' . http_build_query($params);
+        }
         try {
-            $url = $this->aiBase . $path;
-            if ($params) {
-                $url .= '?' . http_build_query($params);
-            }
-            $response = Http::timeout(5)->get($url);
-            return $response->json() ?? [];
+            $context = stream_context_create(['http' => ['timeout' => 5, 'ignore_errors' => true]]);
+            $result = @file_get_contents($url, false, $context);
+            if ($result === false) return ['error' => 'AI server offline'];
+            return json_decode($result, true) ?? ['error' => 'Empty response'];
         } catch (\Exception $e) {
-            return ['error' => 'AI server offline'];
+            Log::error('TriviaController::aiRequest', ['error' => $e->getMessage()]);
+            return ['error' => $e->getMessage()];
         }
     }
 
-    // Show lobby - pick difficulty or create custom game
     public function index()
     {
         $recentGames = TriviaGame::where('status', 'completed')
@@ -34,35 +36,22 @@ class TriviaController extends Controller
             ->limit(5)
             ->get();
 
-        $customQuestions = TriviaQuestion::where('is_custom', true)
-            ->orderByDesc('created_at')
-            ->get();
-
-        return view('trivia.index', compact('recentGames', 'customQuestions'));
+        return view('trivia.index', compact('recentGames'));
     }
 
-    // Start a new game
     public function start(Request $request)
     {
         $difficulty = $request->input('difficulty', 'easy');
 
-        if ($difficulty === 'custom') {
-            $request->validate([
-                'question_ids' => 'required|array|size:5',
-                'question_ids.*' => 'exists:trivia_questions,id',
-            ]);
-            $questionIds = $request->input('question_ids');
-        } else {
-            $questions = TriviaQuestion::where('difficulty', $difficulty)
-                ->inRandomOrder()
-                ->limit(5)
-                ->pluck('id')
-                ->toArray();
+        // Need exactly 9 questions (3 per round × 3 rounds)
+        $allIds = TriviaQuestion::where('difficulty', $difficulty)
+            ->inRandomOrder()
+            ->limit(9)
+            ->pluck('id')
+            ->toArray();
 
-            if (count($questions) < 5) {
-                return back()->with('error', 'Not enough questions for this difficulty.');
-            }
-            $questionIds = $questions;
+        if (count($allIds) < 9) {
+            return back()->with('error', 'Not enough questions. Need 9, found ' . count($allIds));
         }
 
         $game = TriviaGame::create([
@@ -70,14 +59,16 @@ class TriviaController extends Controller
             'user_score' => 0,
             'ai_score' => 0,
             'status' => 'in_progress',
+            'current_round' => 1,
             'current_question' => 0,
-            'question_ids' => $questionIds,
+            'round_1_question_ids' => array_slice($allIds, 0, 3),
+            'round_2_question_ids' => array_slice($allIds, 3, 3),
+            'round_3_question_ids' => array_slice($allIds, 6, 3),
         ]);
 
         return redirect()->route('trivia.play', $game->id);
     }
 
-    // Show current question
     public function play(TriviaGame $trivia)
     {
         if ($trivia->isComplete()) {
@@ -89,12 +80,13 @@ class TriviaController extends Controller
             return redirect()->route('trivia.result', $trivia->id);
         }
 
-        $roundNumber = $trivia->current_question + 1;
+        $questionNumber = $trivia->current_question + 1; // 1-3
+        $currentRound = $trivia->current_round;           // 1-3
+        $baseScore = $trivia->baseScore();
 
-        return view('trivia.play', compact('trivia', 'question', 'roundNumber'));
+        return view('trivia.play', compact('trivia', 'question', 'questionNumber', 'currentRound', 'baseScore'));
     }
 
-    // Submit answer + steal decision
     public function answer(Request $request, TriviaGame $trivia)
     {
         if ($trivia->isComplete()) {
@@ -107,34 +99,38 @@ class TriviaController extends Controller
         ]);
 
         $question = $trivia->currentQuestion();
-        $roundNumber = $trivia->current_question + 1;
-        $scoreValue = $question->score_value;
+        $currentRound = $trivia->current_round;
+        $questionNumber = $trivia->current_question + 1;
+        $baseScore = $trivia->baseScore();
 
-        // Get AI decision from Python server
+        // Ask AI for its decision
         $aiDecision = $this->aiRequest('/trivia/decide', [
             'question_id' => $question->id,
-            'difficulty' => $question->difficulty,
+            'difficulty' => $trivia->difficulty,
             'game_id' => $trivia->id,
+            'game_round' => $currentRound,
+            'question_number' => $questionNumber,
+            'base_score' => $baseScore,
         ]);
 
-        // Fallback if AI server offline
-        $aiAnswer = $aiDecision['ai_answer'] ?? $this->fallbackAiAnswer($question);
-        $aiSteal = $aiDecision['ai_steal'] ?? (rand(0, 1) === 1);
+        $aiAnswer = $aiDecision['ai_answer'] ?? $this->fallbackAnswer($question);
+        $aiSteal = isset($aiDecision['ai_steal']) ? (bool) $aiDecision['ai_steal'] : (rand(0, 1) === 1);
+        $aiStrategy = $aiDecision['strategy'] ?? 'A';
 
-        // Score the round
         $userAnswer = $request->input('user_answer');
         $userSteal = (bool) $request->input('user_steal');
         $userCorrect = $userAnswer === $question->correct_answer;
         $aiCorrect = $aiAnswer === $question->correct_answer;
 
-        $userPoints = $this->calculatePoints($userCorrect, $userSteal, $aiCorrect, $scoreValue);
-        $aiPoints = $this->calculatePoints($aiCorrect, $aiSteal, $userCorrect, $scoreValue);
+        $userPoints = $this->calculatePoints($userCorrect, $userSteal, $aiCorrect, $baseScore);
+        $aiPoints = $this->calculatePoints($aiCorrect, $aiSteal, $userCorrect, $baseScore);
 
         // Save round
         TriviaRound::create([
             'game_id' => $trivia->id,
             'question_id' => $question->id,
-            'round_number' => $roundNumber,
+            'game_round' => $currentRound,
+            'question_number' => $questionNumber,
             'user_answer' => $userAnswer,
             'ai_answer' => $aiAnswer,
             'user_steal' => $userSteal,
@@ -143,97 +139,183 @@ class TriviaController extends Controller
             'ai_correct' => $aiCorrect,
             'user_points_earned' => $userPoints,
             'ai_points_earned' => $aiPoints,
+            'base_score' => $baseScore,
+            'ai_strategy' => $aiStrategy,
         ]);
 
-        // Update game scores
+        // Update scores
         $trivia->user_score += $userPoints;
         $trivia->ai_score += $aiPoints;
         $trivia->current_question += 1;
 
-        // Check if game over
-        if ($trivia->current_question >= 5) {
-            $trivia->status = 'completed';
+        // Check if round complete (3 questions done)
+        $justFinishedRound = false;
+        if ($trivia->current_question >= 3) {
+            if ($trivia->current_round >= 3) {
+                $trivia->status = 'completed';
+            } else {
+                $trivia->current_round += 1;
+                $trivia->current_question = 0;
+                $justFinishedRound = true;
+            }
         }
 
         $trivia->save();
 
-        // Tell AI server to learn from this round
+        // Tell AI to learn
         $this->aiRequest('/trivia/learn', [
             'question_id' => $question->id,
-            'user_answer' => $userAnswer,
+            'difficulty' => $trivia->difficulty,
             'user_correct' => $userCorrect ? 1 : 0,
             'user_steal' => $userSteal ? 1 : 0,
-            'difficulty' => $question->difficulty,
+            'ai_strategy' => $aiStrategy,
+            'ai_correct' => $aiCorrect ? 1 : 0,
+            'ai_steal' => $aiSteal ? 1 : 0,
+            'ai_points' => $aiPoints,
+            'user_points' => $userPoints,
             'game_id' => $trivia->id,
+            'game_round' => $currentRound,
+            'question_number' => $questionNumber,
         ]);
 
-        // Show round result
         return view('trivia.round_result', compact(
-            'trivia', 'question', 'roundNumber',
+            'trivia', 'question', 'questionNumber', 'currentRound',
             'userAnswer', 'aiAnswer', 'userSteal', 'aiSteal',
-            'userCorrect', 'aiCorrect', 'userPoints', 'aiPoints', 'scoreValue'
+            'userCorrect', 'aiCorrect', 'userPoints', 'aiPoints',
+            'baseScore', 'aiStrategy', 'justFinishedRound'
         ));
     }
 
-    // Final result screen
     public function result(TriviaGame $trivia)
     {
         $rounds = $trivia->rounds()->with('question')->get();
-        return view('trivia.result', compact('trivia', 'rounds'));
+        $roundGroups = $rounds->groupBy('game_round');
+        return view('trivia.result', compact('trivia', 'rounds', 'roundGroups'));
     }
 
-    // Create custom question
-    public function createQuestion()
-    {
-        return view('trivia.create_question');
-    }
-
-    public function storeQuestion(Request $request)
-    {
-        $request->validate([
-            'question' => 'required|string|max:500',
-            'answer_a' => 'required|string|max:200',
-            'answer_b' => 'required|string|max:200',
-            'answer_c' => 'required|string|max:200',
-            'answer_d' => 'required|string|max:200',
-            'correct_answer' => 'required|in:a,b,c,d',
-            'score_value' => 'required|integer|min:1|max:10',
-        ]);
-
-        TriviaQuestion::create([
-            'question' => $request->question,
-            'answer_a' => $request->answer_a,
-            'answer_b' => $request->answer_b,
-            'answer_c' => $request->answer_c,
-            'answer_d' => $request->answer_d,
-            'correct_answer' => $request->correct_answer,
-            'difficulty' => 'custom',
-            'score_value' => $request->score_value,
-            'is_custom' => true,
-        ]);
-
-        return redirect()->route('trivia.index')->with('success', 'Question added!');
-    }
-
-    // Scoring logic
-    private function calculatePoints(bool $myCorrect, bool $mySteal, bool $opponentCorrect, int $scoreValue): int
+    /**
+     * Scoring:
+     * - No steal: correct = +base, wrong = 0
+     * - Steal correct (opponent answered right) = +(base + 1)
+     * - Steal wrong (opponent answered wrong)   = -(base)
+     */
+    private function calculatePoints(bool $myCorrect, bool $mySteal, bool $opponentCorrect, int $base): int
     {
         if ($mySteal) {
-            // Stealing: bet opponent got it right
-            if ($opponentCorrect) {
-                return $scoreValue * 2; // correct steal = double points
-            } else {
-                return -$scoreValue; // wrong steal = lose points
-            }
-        } else {
-            // Not stealing: just score own answer
-            return $myCorrect ? $scoreValue : 0;
+            return $opponentCorrect ? $base + 1 : -$base;
         }
+        return $myCorrect ? $base : 0;
     }
 
-    private function fallbackAiAnswer(TriviaQuestion $question): string
+    private function fallbackAnswer(TriviaQuestion $question): string
     {
-        // Random answer as fallback when AI server offline
         return ['a', 'b', 'c', 'd'][rand(0, 3)];
+    }
+
+    public function statsJson(): \Illuminate\Http\JsonResponse
+    {
+        $total = TriviaGame::where('status', 'completed')->count();
+
+        $recentGames = TriviaGame::where('status', 'completed')
+            ->orderByDesc('created_at')
+            ->limit(20)
+            ->get()
+            ->map(fn($g) => [
+                'id'         => $g->id,
+                'difficulty' => $g->difficulty,
+                'user_score' => $g->user_score,
+                'ai_score'   => $g->ai_score,
+                'winner'     => $g->winner(),
+            ]);
+
+        // User history stats
+        $userHistory = [];
+        try {
+            $history = \DB::table('trivia_user_history')->get();
+            $t       = $history->count();
+            if ($t > 0) {
+                $steals        = $history->where('user_steal', 1)->count();
+                $correct       = $history->where('user_correct', 1)->count();
+                $correctSteals = $history->where('user_steal', 1)->where('ai_correct', 1)->count();
+                $userHistory   = [
+                    'total_rounds'   => $t,
+                    'accuracy'       => round($correct / $t, 3),
+                    'steal_rate'     => round($steals / $t, 3),
+                    'steal_accuracy' => $steals > 0 ? round($correctSteals / $steals, 3) : 0,
+                ];
+            }
+        } catch (\Exception $e) {}
+
+        // Read actual learned strategy weights from trivia_ai_model
+        // and reverse-engineer lr + risk slider values that best match them.
+        $inferredSliders = $this->inferSlidersFromWeights();
+
+        return response()->json([
+            'stats'            => ['total_games' => $total],
+            'recent_games'     => $recentGames,
+            'user_history'     => $userHistory,
+            'inferred_sliders' => $inferredSliders,
+        ]);
+    }
+
+    /**
+     * Read strategy_A/B/C/D weights from trivia_ai_model and find the
+     * lr + risk values (both 1-100) whose expectedPayoff distribution
+     * at p=0.5, b=1 best matches the observed weight ratios.
+     *
+     * Strategy weights in trivia_ai_model are profitability scores 0-1.
+     * We compare ratios B/A and D/B to infer the two slider values:
+     *
+     * - lr  controls how much wrong-steal penalty matters → drives A vs B separation
+     * - risk controls steal bonus inflation → drives B vs D separation
+     */
+    private function inferSlidersFromWeights(): array
+    {
+        $defaults = ['lr' => 10, 'risk' => 50, 'observations' => 0];
+
+        try {
+            $rows = \DB::table('trivia_ai_model')
+                ->whereIn('feature', [
+                    'strategy_A_easy', 'strategy_B_easy',
+                    'strategy_C_easy', 'strategy_D_easy',
+                ])
+                ->pluck('weight', 'feature');
+
+            if ($rows->count() < 4) return $defaults;
+
+            $wA = $rows['strategy_A_easy'] ?? 0.5;
+            $wB = $rows['strategy_B_easy'] ?? 0.3;
+            $wC = $rows['strategy_C_easy'] ?? 0.15;
+            $wD = $rows['strategy_D_easy'] ?? 0.05;
+
+            $obs = \DB::table('trivia_ai_model')
+                ->where('feature', 'strategy_B_easy')
+                ->value('observations') ?? 0;
+
+            // B/A ratio tells us about risk tolerance:
+            // high B/A → AI has found stealing profitable → high risk tolerance
+            $baRatio   = $wA > 0 ? $wB / $wA : 1.0;
+            $inferRisk = (int) round(min(100, max(1, ($baRatio - 0.5) * 80)));
+
+            // D/B ratio tells us about learning rate:
+            // low D/B → AI has learned wrong+steal is costly → high learning rate (cautious)
+            // high D/B → AI hasn't penalised wrong steals much → low learning rate
+            $dbRatio  = $wB > 0 ? $wD / $wB : 0.5;
+            $inferLr  = (int) round(min(100, max(1, (1 - $dbRatio) * 80 + 5)));
+
+            return [
+                'lr'           => $inferLr,
+                'risk'         => $inferRisk,
+                'observations' => (int) $obs,
+                'raw_weights'  => [
+                    'A' => round($wA, 3),
+                    'B' => round($wB, 3),
+                    'C' => round($wC, 3),
+                    'D' => round($wD, 3),
+                ],
+            ];
+        } catch (\Exception $e) {
+            return $defaults;
+        }
     }
 }

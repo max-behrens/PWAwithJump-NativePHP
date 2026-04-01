@@ -15,21 +15,22 @@ return new class extends Migration
             $table->string('answer_b');
             $table->string('answer_c');
             $table->string('answer_d');
-            $table->string('correct_answer'); // 'a', 'b', 'c', or 'd'
-            $table->enum('difficulty', ['easy', 'medium', 'hard', 'custom'])->default('medium');
-            $table->integer('score_value')->default(1); // easy=1, medium=2, hard=3, custom=user defined
-            $table->boolean('is_custom')->default(false);
+            $table->string('correct_answer'); // 'a','b','c','d'
+            $table->enum('difficulty', ['easy', 'medium', 'hard'])->default('medium');
             $table->timestamps();
         });
 
         Schema::create('trivia_games', function (Blueprint $table) {
             $table->id();
-            $table->enum('difficulty', ['easy', 'medium', 'hard', 'custom']);
+            $table->enum('difficulty', ['easy', 'medium', 'hard']);
             $table->integer('user_score')->default(0);
             $table->integer('ai_score')->default(0);
             $table->enum('status', ['in_progress', 'completed'])->default('in_progress');
-            $table->integer('current_question')->default(0); // 0-4
-            $table->json('question_ids'); // array of 5 question ids
+            $table->integer('current_round')->default(1);    // 1-3
+            $table->integer('current_question')->default(0); // 0-2 within round
+            $table->json('round_1_question_ids');
+            $table->json('round_2_question_ids');
+            $table->json('round_3_question_ids');
             $table->timestamps();
         });
 
@@ -37,8 +38,9 @@ return new class extends Migration
             $table->id();
             $table->foreignId('game_id')->constrained('trivia_games')->onDelete('cascade');
             $table->foreignId('question_id')->constrained('trivia_questions')->onDelete('cascade');
-            $table->integer('round_number'); // 1-5
-            $table->string('user_answer')->nullable(); // 'a','b','c','d'
+            $table->integer('game_round');       // 1-3
+            $table->integer('question_number');  // 1-3 within round
+            $table->string('user_answer')->nullable();
             $table->string('ai_answer')->nullable();
             $table->boolean('user_steal')->default(false);
             $table->boolean('ai_steal')->default(false);
@@ -46,6 +48,8 @@ return new class extends Migration
             $table->boolean('ai_correct')->nullable();
             $table->integer('user_points_earned')->default(0);
             $table->integer('ai_points_earned')->default(0);
+            $table->integer('base_score')->default(1);
+            $table->string('ai_strategy')->nullable(); // A, B, C, D
             $table->timestamps();
         });
     }

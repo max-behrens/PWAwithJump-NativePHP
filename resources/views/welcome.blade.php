@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>TaskFlow</title>
+    <title>TriviaBluff</title>
 <link href="/css/daisyui-themes.css" rel="stylesheet">
 <link href="/css/daisyui.css" rel="stylesheet">
 <script src="/js/tailwind.js"></script>
@@ -64,7 +64,7 @@
         </div>
 
         <h1 class="fade-up-1 text-5xl font-bold tracking-tight mb-3">
-            <span class="mono text-primary">task</span><span class="mono">flow</span>
+            <span class="mono text-primary">trivia</span><span class="mono">bluff</span>
         </h1>
 
         <p class="fade-up-2 text-base-content/60 text-lg font-light max-w-xs leading-relaxed mb-10">
@@ -103,8 +103,8 @@
                     @endif
                 @endauth
             @else
-                <a href="{{ url('/tasks') }}" class="btn btn-primary btn-lg w-full shadow-lg shadow-primary/20">
-                    Open Tasks
+                <a href="{{ url('/trivia') }}" class="btn btn-primary btn-lg w-full shadow-lg shadow-primary/20">
+                    Play Game
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
                 </a>
             @endif
