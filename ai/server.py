@@ -11,12 +11,24 @@ The AI treats each round as a 2x2 game theory problem.
 It chooses ONE of 4 strategies:
   A = answer_correct + no_steal   → safe play, scores base pts if correct
   B = answer_correct + steal      → aggressive, scores base+1 if opponent correct
-  C = answer_wrong   + no_steal   → BAIT TRAP, costs nothing, punishes opponent steal
-  D = answer_wrong   + steal      → rarely optimal, high risk
+  C = answer_wrong   + no_steal   → DECOY, costs nothing, punishes opponent steal
+  D = answer_wrong   + steal      → gamble, only valid if P(user_correct) > base/(base+1)
 
-Strategy weights per difficulty are updated after every round based on
-actual points earned. The AI also reads your recent steal behaviour within
-the current game to adapt in real time.
+ENVIRONMENT LAWS (hardcoded, never learned):
+  - Correct answer, no steal:      +base pts
+  - Correct steal (opp correct):   +(base+1) pts
+  - Wrong steal (opp wrong):       -base pts
+  - Wrong answer, no steal:        0 pts
+  - Base score = difficulty_base + (round_number - 1)
+  - D is only ever chosen if P(user_correct) > base/(base+1) — the break-even threshold
+  - C costs nothing if opponent doesn't steal — always a safe fallback
+  - Stealing is always symmetric: both players face the same steal mechanic
+
+WHAT IS LEARNED (not hardcoded):
+  - P(user_correct | difficulty) — how likely the user is to answer right
+  - P(user_steal | difficulty)   — how often the user steals
+  - Strategy profitability weights — which strategies have historically paid off
+  - Question-specific user accuracy — per-question learning
 """
 
 import json
@@ -39,6 +51,58 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# ─────────────────────────────────────────────
+# ENVIRONMENT LAWS
+# ─────────────────────────────────────────────
+
+DIFFICULTY_BASES = {'easy': 1, 'medium': 2, 'hard': 3}
+
+def compute_base_score(difficulty, game_round):
+    """Law: base = difficulty_base + (round - 1)"""
+    return DIFFICULTY_BASES.get(difficulty, 1) + (game_round - 1)
+
+def score_if_steal_correct(base):
+    """Law: correct steal always earns base+1"""
+    return base + 1
+
+def score_if_steal_wrong(base):
+    """Law: wrong steal always costs -base (this is arithmetic, not learned)"""
+    return -base
+
+def score_if_no_steal_correct(base):
+    """Law: correct answer no steal earns base"""
+    return base
+
+def score_if_no_steal_wrong():
+    """Law: wrong answer no steal earns 0"""
+    return 0
+
+def steal_breakeven(base):
+    """
+    Law: stealing is only profitable in expectation if P(opponent_correct) > base/(base+1).
+    This is pure arithmetic derived from:
+      E[steal] = p*(base+1) + (1-p)*(-base) > 0
+      => p > base/(2*base+1)  -- but we use simpler base/(base+1) as conservative threshold
+    """
+    return base / (base + 1)
+
+def expected_steal_value(p_opponent_correct, base):
+    """
+    Law: analytically correct expected value of stealing.
+    p_opponent_correct = estimated probability opponent answered correctly.
+    """
+    return p_opponent_correct * score_if_steal_correct(base) + \
+           (1 - p_opponent_correct) * score_if_steal_wrong(base)
+
+def expected_no_steal_value(p_self_correct, base):
+    """
+    Law: analytically correct expected value of not stealing.
+    p_self_correct = estimated probability AI answers correctly (difficulty-based).
+    """
+    return p_self_correct * score_if_no_steal_correct(base) + \
+           (1 - p_self_correct) * score_if_no_steal_wrong()
 
 
 # ─────────────────────────────────────────────
@@ -137,12 +201,9 @@ def load_and_train():
 # ─────────────────────────────────────────────
 
 STRATEGIES = ['A', 'B', 'C', 'D']
-# A = correct + no steal
-# B = correct + steal
-# C = wrong   + no steal  (BAIT)
-# D = wrong   + steal
 
-DIFFICULTY_BASES = {'easy': 1, 'medium': 2, 'hard': 3}
+# AI's own answer accuracy by difficulty — these are priors, updated by learning
+AI_ACCURACY_PRIORS = {'easy': 0.85, 'medium': 0.65, 'hard': 0.45}
 
 
 def ensure_trivia_tables():
@@ -191,7 +252,6 @@ class TriviaAI:
         return row['weight'] if row else default
 
     def update_weight(self, feature, new_value, lr=0.15):
-        """Exponential moving average update."""
         conn = get_db()
         existing = conn.execute(
             'SELECT weight, observations FROM trivia_ai_model WHERE feature = ?', (feature,)
@@ -213,7 +273,6 @@ class TriviaAI:
     # ── Session context ───────────────────────────────────────────────────────
 
     def get_game_history(self, game_id):
-        """All rounds played so far in this game."""
         conn = get_db()
         rows = conn.execute(
             'SELECT * FROM trivia_user_history WHERE game_id=? ORDER BY game_round, question_number',
@@ -223,82 +282,81 @@ class TriviaAI:
         return [dict(r) for r in rows]
 
     def user_steal_rate_in_game(self, game_id):
-        """How often has the user stolen in this game so far?"""
         history = self.get_game_history(game_id)
         if not history:
             return None
         return sum(1 for h in history if h['user_steal']) / len(history)
 
-    def user_accuracy_in_game(self, game_id):
-        """User's answer accuracy so far in this game."""
-        history = self.get_game_history(game_id)
-        if not history:
-            return None
-        return sum(1 for h in history if h['user_correct']) / len(history)
-
     def score_differential(self, game_id):
-        """
-        ai_points - user_points across this game so far.
-        Positive = AI winning, negative = AI losing.
-        """
         history = self.get_game_history(game_id)
         if not history:
             return 0
         return sum(h['ai_points'] for h in history) - sum(h['user_points'] for h in history)
 
+    # ── Learned predictions ───────────────────────────────────────────────────
+
+    def predict_user_correct(self, difficulty, question_id):
+        """
+        LEARNED: estimate P(user answers correctly).
+        Combines difficulty-level history with question-specific history.
+        """
+        defaults = {'easy': 0.6, 'medium': 0.4, 'hard': 0.25}
+        base = self.get_weight(f'user_accuracy_{difficulty}', defaults.get(difficulty, 0.4))
+        q_specific = self.get_weight(f'question_{question_id}_user_correct', base)
+        # Weight question-specific more heavily if we have seen it before
+        return base * 0.5 + q_specific * 0.5
+
+    def predict_user_steal(self, difficulty, game_id):
+        """
+        LEARNED: estimate P(user steals this round).
+        Combines global difficulty history with in-game recent behaviour.
+        """
+        global_rate = self.get_weight(f'user_steal_rate_{difficulty}', 0.5)
+        in_game = self.user_steal_rate_in_game(game_id)
+        if in_game is None:
+            return global_rate
+        # In-game recent behaviour weighted more heavily
+        return global_rate * 0.4 + in_game * 0.6
+
+    def ai_accuracy_for_difficulty(self, difficulty):
+        """
+        LEARNED over time but starts from prior.
+        How likely is the AI to answer correctly at this difficulty.
+        """
+        return self.get_weight(f'ai_accuracy_{difficulty}', AI_ACCURACY_PRIORS.get(difficulty, 0.6))
+
     # ── Strategy weights ──────────────────────────────────────────────────────
 
     def get_strategy_weights(self, difficulty, game_round):
-        """
-        Get the current learned strategy weights for this difficulty + round.
-        Returns dict {A: float, B: float, C: float, D: float}
-        All weights are profitability scores (higher = more likely to pick).
-        """
         weights = {}
         for s in STRATEGIES:
-            # Base weight — start with safe defaults
             default = {'A': 0.5, 'B': 0.3, 'C': 0.15, 'D': 0.05}[s]
             weights[s] = self.get_weight(f'strategy_{s}_{difficulty}', default)
-
-        # Round modifier — in later rounds, bait (C) becomes more valuable
-        # because the stakes are higher so punishing a wrong steal hurts more
         round_bait_boost = (game_round - 1) * 0.05
         weights['C'] = min(0.8, weights['C'] + round_bait_boost)
-
         return weights
 
-    def sample_strategy(self, weights, user_steal_rate, score_diff, game_round):
-        """
-        Choose a strategy probabilistically based on weights,
-        adjusted for current game context.
-        """
+    def sample_strategy(self, weights, p_user_steal, score_diff, game_round):
         w = dict(weights)
 
-        # If user steals a lot → boost C (bait them)
-        if user_steal_rate is not None:
-            if user_steal_rate > 0.6:
+        if p_user_steal is not None:
+            if p_user_steal > 0.6:
                 w['C'] = min(0.9, w['C'] * 1.5)
                 w['A'] = w['A'] * 0.7
-            elif user_steal_rate < 0.2:
-                # User rarely steals → bait is wasted, boost B (steal from them)
+            elif p_user_steal < 0.2:
                 w['B'] = min(0.8, w['B'] * 1.3)
                 w['C'] = w['C'] * 0.6
 
-        # If AI is losing badly → take more risks (boost B, accept C)
         if score_diff < -3:
             w['B'] = min(0.9, w['B'] * 1.4)
             w['A'] = w['A'] * 0.7
-
-        # If AI is winning comfortably → play safer
         if score_diff > 3:
             w['A'] = min(0.9, w['A'] * 1.3)
             w['B'] = w['B'] * 0.7
 
-        # Normalise to sum to 1
         total = sum(w.values())
         probs = {s: w[s] / total for s in STRATEGIES}
 
-        # Weighted random choice
         r = random.random()
         cumulative = 0
         for s in STRATEGIES:
@@ -324,37 +382,61 @@ class TriviaAI:
 
     def decide(self, question_id, difficulty, game_id, game_round, question_number, base_score):
         """
-        Pick a strategy and return ai_answer + ai_steal.
-        This is the core decision method called before each round.
+        Pick a strategy using learned predictions + environment laws.
         """
-        # Get context
-        user_steal_rate = self.user_steal_rate_in_game(game_id)
-        score_diff = self.score_differential(game_id)
+        # Learned predictions
+        p_user_correct = self.predict_user_correct(difficulty, question_id)
+        p_user_steal   = self.predict_user_steal(difficulty, game_id)
+        p_ai_correct   = self.ai_accuracy_for_difficulty(difficulty)
+        score_diff     = self.score_differential(game_id)
 
-        # Get strategy weights
+        # Get strategy weights from learning
         weights = self.get_strategy_weights(difficulty, game_round)
 
-        # Sample strategy
-        strategy = self.sample_strategy(weights, user_steal_rate, score_diff, game_round)
+        # Sample candidate strategy
+        strategy = self.sample_strategy(weights, p_user_steal, score_diff, game_round)
 
-        # Translate strategy to answer + steal
+        # ── ENVIRONMENT LAW ENFORCEMENT ──────────────────────────────────────
+        # Law 1: D (wrong+steal) is only rational if P(user_correct) > breakeven
+        # because stealing with a wrong answer: E = p*(base+1) + (1-p)*(-base)
+        # This is only > 0 when p > base/(2*base+1), use base/(base+1) as threshold
+        if strategy == 'D':
+            threshold = steal_breakeven(base_score)
+            if p_user_correct < threshold:
+                # Override D → C: answer wrong but don't waste a steal
+                strategy = 'C'
+
+        # Law 2: Analytically verify B vs A using environment laws
+        # If expected steal value < expected no-steal value, demote B → A
+        if strategy == 'B':
+            ev_steal   = expected_steal_value(p_user_correct, base_score)
+            ev_no_steal = expected_no_steal_value(p_ai_correct, base_score)
+            # Only override if the margin is decisive (>0.5pt difference)
+            # to preserve some exploration
+            if ev_steal < ev_no_steal - 0.5:
+                strategy = 'A'
+
+        # Translate to answer + steal
         if strategy == 'A':
             ai_answer = self.get_correct_answer(question_id)
-            ai_steal = False
+            ai_steal  = False
         elif strategy == 'B':
             ai_answer = self.get_correct_answer(question_id)
-            ai_steal = True
+            ai_steal  = True
         elif strategy == 'C':
             ai_answer = self.get_wrong_answer(question_id)
-            ai_steal = False
-        else:  # D
+            ai_steal  = False
+        else:  # D — only reached if law check passed
             ai_answer = self.get_wrong_answer(question_id)
-            ai_steal = True
+            ai_steal  = True
 
         return {
-            'ai_answer': ai_answer,
-            'ai_steal': ai_steal,
-            'strategy': strategy,
+            'ai_answer':         ai_answer,
+            'ai_steal':          ai_steal,
+            'strategy':          strategy,
+            'p_user_correct':    round(p_user_correct, 3),
+            'p_user_steal':      round(p_user_steal, 3),
+            'steal_breakeven':   round(steal_breakeven(base_score), 3),
         }
 
     # ── Learning ──────────────────────────────────────────────────────────────
@@ -363,12 +445,8 @@ class TriviaAI:
               ai_strategy, ai_correct, ai_steal, ai_points, user_points,
               game_id, game_round, question_number):
         """
-        Called after every round. Updates:
-        1. Strategy profitability weights — was the chosen strategy profitable?
-        2. User behaviour patterns — accuracy, steal rate
-        3. Question knowledge
+        Update only what is learnable — not environment laws.
         """
-        # Save full round to history
         conn = get_db()
         conn.execute('''
             INSERT INTO trivia_user_history
@@ -384,25 +462,20 @@ class TriviaAI:
         conn.commit()
         conn.close()
 
-        # ── Update strategy profitability ──────────────────────────────────
-        # Normalise ai_points to a 0-1 signal for the weight update.
-        # We use tanh-like normalisation so big wins/losses have diminishing effect.
-        # Max possible points in hard R3 = 6 (steal correct), min = -5 (steal wrong)
+        # Strategy profitability — normalise points to 0-1
         max_pts = 6.0
-        normalised = (ai_points / max_pts + 1) / 2  # maps [-6,6] → [0,1]
-        normalised = max(0.0, min(1.0, normalised))
-
-        # Update strategy weight with higher learning rate for big outcomes
+        normalised = max(0.0, min(1.0, (ai_points / max_pts + 1) / 2))
         lr = 0.2 if abs(ai_points) >= 3 else 0.12
         self.update_weight(f'strategy_{ai_strategy}_{difficulty}', normalised, lr=lr)
 
-        # ── Update user behaviour patterns ────────────────────────────────
-        self.update_weight(f'user_accuracy_{difficulty}', 1.0 if user_correct else 0.0)
-        self.update_weight(f'user_steal_rate_{difficulty}', 1.0 if user_steal else 0.0)
+        # User behaviour — purely learned
+        self.update_weight(f'user_accuracy_{difficulty}',    1.0 if user_correct else 0.0)
+        self.update_weight(f'user_steal_rate_{difficulty}',  1.0 if user_steal   else 0.0)
         self.update_weight(f'question_{question_id}_user_correct', 1.0 if user_correct else 0.0)
 
-        # ── Track if user's steal was profitable ─────────────────────────
-        # If user stole: was it correct (ai_correct=True) or wrong?
+        # AI accuracy tracking — so it learns its own real performance
+        self.update_weight(f'ai_accuracy_{difficulty}', 1.0 if ai_correct else 0.0, lr=0.1)
+
         if user_steal:
             self.update_weight(
                 f'user_steal_accuracy_{difficulty}',
@@ -417,9 +490,7 @@ class TriviaAI:
         total = len(history)
         correct = sum(1 for h in history if h['user_correct'])
         steals = sum(1 for h in history if h['user_steal'])
-        strategy_counts = {}
-        for s in STRATEGIES:
-            strategy_counts[s] = sum(1 for h in history if h['ai_strategy'] == s)
+        strategy_counts = {s: sum(1 for h in history if h['ai_strategy'] == s) for s in STRATEGIES}
         return {
             'total_rounds_played': total,
             'user_correct_total': correct,
@@ -454,10 +525,9 @@ class AIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        path = parsed.path
+        path   = parsed.path
         params = parse_qs(parsed.query)
 
-        # ── Task AI ──────────────────────────────────────────────────────────
         if path == '/health':
             self.send_json({'status': 'ok', 'port': PORT})
 
@@ -502,40 +572,32 @@ class AIHandler(BaseHTTPRequestHandler):
             suggestions.sort(key=lambda x: x['completion_likelihood'], reverse=True)
             self.send_json({'suggestions': suggestions})
 
-        # ── Trivia AI ─────────────────────────────────────────────────────────
         elif path == '/trivia/decide':
-            question_id = int(params.get('question_id', [0])[0])
-            difficulty = params.get('difficulty', ['medium'])[0]
-            game_id = int(params.get('game_id', [0])[0])
-            game_round = int(params.get('game_round', [1])[0])
+            question_id     = int(params.get('question_id',     [0])[0])
+            difficulty      = params.get('difficulty',          ['medium'])[0]
+            game_id         = int(params.get('game_id',         [0])[0])
+            game_round      = int(params.get('game_round',      [1])[0])
             question_number = int(params.get('question_number', [1])[0])
-            base_score = int(params.get('base_score', [1])[0])
-
-            result = trivia_ai.decide(
-                question_id, difficulty, game_id,
-                game_round, question_number, base_score
-            )
+            base_score      = int(params.get('base_score',      [1])[0])
+            result = trivia_ai.decide(question_id, difficulty, game_id, game_round, question_number, base_score)
             self.send_json(result)
 
         elif path == '/trivia/learn':
-            question_id = int(params.get('question_id', [0])[0])
-            difficulty = params.get('difficulty', ['medium'])[0]
-            user_correct = params.get('user_correct', ['0'])[0] == '1'
-            user_steal = params.get('user_steal', ['0'])[0] == '1'
-            ai_strategy = params.get('ai_strategy', ['A'])[0]
-            ai_correct = params.get('ai_correct', ['0'])[0] == '1'
-            ai_steal = params.get('ai_steal', ['0'])[0] == '1'
-            ai_points = int(params.get('ai_points', [0])[0])
-            user_points = int(params.get('user_points', [0])[0])
-            game_id = int(params.get('game_id', [0])[0])
-            game_round = int(params.get('game_round', [1])[0])
+            question_id     = int(params.get('question_id',     [0])[0])
+            difficulty      = params.get('difficulty',          ['medium'])[0]
+            user_correct    = params.get('user_correct',        ['0'])[0] == '1'
+            user_steal      = params.get('user_steal',          ['0'])[0] == '1'
+            ai_strategy     = params.get('ai_strategy',         ['A'])[0]
+            ai_correct      = params.get('ai_correct',          ['0'])[0] == '1'
+            ai_steal        = params.get('ai_steal',            ['0'])[0] == '1'
+            ai_points       = int(params.get('ai_points',       [0])[0])
+            user_points     = int(params.get('user_points',     [0])[0])
+            game_id         = int(params.get('game_id',         [0])[0])
+            game_round      = int(params.get('game_round',      [1])[0])
             question_number = int(params.get('question_number', [1])[0])
-
-            trivia_ai.learn(
-                question_id, difficulty, user_correct, user_steal,
-                ai_strategy, ai_correct, ai_steal, ai_points, user_points,
-                game_id, game_round, question_number
-            )
+            trivia_ai.learn(question_id, difficulty, user_correct, user_steal,
+                            ai_strategy, ai_correct, ai_steal, ai_points, user_points,
+                            game_id, game_round, question_number)
             self.send_json({'status': 'learned'})
 
         elif path == '/trivia/stats':

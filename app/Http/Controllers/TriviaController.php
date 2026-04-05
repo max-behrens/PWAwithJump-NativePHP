@@ -228,11 +228,11 @@ class TriviaController extends Controller
                 'winner'     => $g->winner(),
             ]);
 
-        // User history stats
+        // ── User history: aggregate across ALL games/difficulties ──────────
         $userHistory = [];
         try {
             $history = \DB::table('trivia_user_history')->get();
-            $t       = $history->count();
+            $t = $history->count();
             if ($t > 0) {
                 $steals        = $history->where('user_steal', 1)->count();
                 $correct       = $history->where('user_correct', 1)->count();
@@ -246,76 +246,166 @@ class TriviaController extends Controller
             }
         } catch (\Exception $e) {}
 
-        // Read actual learned strategy weights from trivia_ai_model
-        // and reverse-engineer lr + risk slider values that best match them.
+        // ── Real strategy performance: actual avg AI points per strategy ───
+        // Bucket rounds by whether user stole (p≈1) or didn't (p≈0)
+        // giving us real 2x2 cell values and scatter data for the chart
+        $realStrategyData = $this->realStrategyData();
+
+        // ── Inferred sliders from obs-weighted avg weights all difficulties ─
         $inferredSliders = $this->inferSlidersFromWeights();
 
+        // ── Raw table data for DB viewer components ────────────────────
+        $rawGames    = TriviaGame::orderByDesc('created_at')->get()->toArray();
+        $rawRounds   = \DB::table('trivia_rounds')->orderBy('game_id')->orderBy('game_round')->orderBy('question_number')->get()->map(fn($r) => (array)$r)->toArray();
+        $rawHistory  = \DB::table('trivia_user_history')->orderBy('id')->get()->map(fn($r) => (array)$r)->toArray();
+        $rawAiModel  = \DB::table('trivia_ai_model')->orderBy('id')->get()->map(fn($r) => (array)$r)->toArray();
+        
         return response()->json([
-            'stats'            => ['total_games' => $total],
-            'recent_games'     => $recentGames,
-            'user_history'     => $userHistory,
-            'inferred_sliders' => $inferredSliders,
+            'stats'               => ['total_games' => $total],
+            'recent_games'        => $recentGames,
+            'user_history'        => $userHistory,
+            'inferred_sliders'    => $inferredSliders,
+            'real_strategy_data'  => $realStrategyData,
+            'raw_games'           => $rawGames,
+            'raw_rounds'          => $rawRounds,
+            'raw_history'         => $rawHistory,
+            'raw_ai_model'        => $rawAiModel,
         ]);
     }
 
     /**
-     * Read strategy_A/B/C/D weights from trivia_ai_model and find the
-     * lr + risk values (both 1-100) whose expectedPayoff distribution
-     * at p=0.5, b=1 best matches the observed weight ratios.
-     *
-     * Strategy weights in trivia_ai_model are profitability scores 0-1.
-     * We compare ratios B/A and D/B to infer the two slider values:
-     *
-     * - lr  controls how much wrong-steal penalty matters → drives A vs B separation
-     * - risk controls steal bonus inflation → drives B vs D separation
+     * Aggregate actual AI points earned per strategy, bucketed by
+     * user_steal (0 or 1) — gives us the real 2x2 matrix values
+     * and scatter point data for the chart overlay.
+     */
+    private function realStrategyData(): array
+    {
+        try {
+            $rounds = \DB::table('trivia_user_history')
+                ->select('ai_strategy', 'user_steal', 'ai_points', 'user_steal')
+                ->get();
+
+            if ($rounds->isEmpty()) return [];
+
+            $strategies = ['A', 'B', 'C', 'D'];
+            $result = [];
+
+            foreach ($strategies as $s) {
+                $sRounds = $rounds->where('ai_strategy', $s);
+                $total   = $sRounds->count();
+                if ($total === 0) continue;
+
+                // When user steals
+                $whenSteal    = $sRounds->where('user_steal', 1);
+                $whenNoSteal  = $sRounds->where('user_steal', 0);
+
+                // Scatter: group into steal-rate buckets 0.0-1.0 in 0.1 steps
+                // Each bucket = avg ai_points for rounds where user_steal≈bucket
+                // Since user_steal is binary we use 0=no steal, 1=steal
+                $scatterPoints = [];
+                if ($whenNoSteal->count() > 0) {
+                    $scatterPoints[] = [
+                        'x'    => 0.0,
+                        'y'    => round($whenNoSteal->avg('ai_points'), 3),
+                        'n'    => $whenNoSteal->count(),
+                    ];
+                }
+                if ($whenSteal->count() > 0) {
+                    $scatterPoints[] = [
+                        'x'    => 1.0,
+                        'y'    => round($whenSteal->avg('ai_points'), 3),
+                        'n'    => $whenSteal->count(),
+                    ];
+                }
+
+                $result[$s] = [
+                    'total'           => $total,
+                    'avg_pts_overall' => round($sRounds->avg('ai_points'), 3),
+                    'avg_pts_steal'   => $whenSteal->count() > 0
+                        ? round($whenSteal->avg('ai_points'), 3) : null,
+                    'avg_pts_no_steal' => $whenNoSteal->count() > 0
+                        ? round($whenNoSteal->avg('ai_points'), 3) : null,
+                    'steal_count'     => $whenSteal->count(),
+                    'no_steal_count'  => $whenNoSteal->count(),
+                    'scatter'         => $scatterPoints,
+                ];
+            }
+
+            return $result;
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Aggregate strategy weights across ALL difficulties,
+     * weighted by observation count so more-played difficulties
+     * contribute more to the inferred slider values.
      */
     private function inferSlidersFromWeights(): array
     {
         $defaults = ['lr' => 10, 'risk' => 50, 'observations' => 0];
 
         try {
+            $difficulties = ['easy', 'medium', 'hard'];
+            $strategies   = ['A', 'B', 'C', 'D'];
+
+            // Collect weights and obs counts for all difficulty×strategy combos
+            $features = [];
+            foreach ($difficulties as $d) {
+                foreach ($strategies as $s) {
+                    $features[] = "strategy_{$s}_{$d}";
+                }
+            }
+
             $rows = \DB::table('trivia_ai_model')
-                ->whereIn('feature', [
-                    'strategy_A_easy', 'strategy_B_easy',
-                    'strategy_C_easy', 'strategy_D_easy',
-                ])
-                ->pluck('weight', 'feature');
+                ->whereIn('feature', $features)
+                ->get()
+                ->keyBy('feature');
 
-            if ($rows->count() < 4) return $defaults;
+            // Weighted average weight per strategy across difficulties
+            $wAvg = [];
+            $totalObs = 0;
+            foreach ($strategies as $s) {
+                $weightedSum = 0;
+                $obsSum      = 0;
+                foreach ($difficulties as $d) {
+                    $key = "strategy_{$s}_{$d}";
+                    if (isset($rows[$key])) {
+                        $obs          = $rows[$key]->observations;
+                        $weightedSum += $rows[$key]->weight * $obs;
+                        $obsSum      += $obs;
+                    }
+                }
+                $wAvg[$s] = $obsSum > 0 ? $weightedSum / $obsSum : null;
+            }
 
-            $wA = $rows['strategy_A_easy'] ?? 0.5;
-            $wB = $rows['strategy_B_easy'] ?? 0.3;
-            $wC = $rows['strategy_C_easy'] ?? 0.15;
-            $wD = $rows['strategy_D_easy'] ?? 0.05;
+            $totalObs = \DB::table('trivia_user_history')->count();
 
-            $obs = \DB::table('trivia_ai_model')
-                ->where('feature', 'strategy_B_easy')
-                ->value('observations') ?? 0;
+            // Need at least A and B to infer
+            if ($wAvg['A'] === null || $wAvg['B'] === null) return $defaults;
+            if ($totalObs === 0) return $defaults;
 
-            // B/A ratio tells us about risk tolerance:
-            // high B/A → AI has found stealing profitable → high risk tolerance
-            $baRatio   = $wA > 0 ? $wB / $wA : 1.0;
+            // B/A → risk tolerance
+            $baRatio   = $wAvg['A'] > 0 ? $wAvg['B'] / $wAvg['A'] : 1.0;
             $inferRisk = (int) round(min(100, max(1, ($baRatio - 0.5) * 80)));
 
-            // D/B ratio tells us about learning rate:
-            // low D/B → AI has learned wrong+steal is costly → high learning rate (cautious)
-            // high D/B → AI hasn't penalised wrong steals much → low learning rate
-            $dbRatio  = $wB > 0 ? $wD / $wB : 0.5;
-            $inferLr  = (int) round(min(100, max(1, (1 - $dbRatio) * 80 + 5)));
+            // D/B → learning rate (only if D exists)
+            $inferLr = 10;
+            if ($wAvg['D'] !== null && $wAvg['B'] > 0) {
+                $dbRatio = $wAvg['D'] / $wAvg['B'];
+                $inferLr = (int) round(min(100, max(1, (1 - $dbRatio) * 80 + 5)));
+            }
 
             return [
                 'lr'           => $inferLr,
                 'risk'         => $inferRisk,
-                'observations' => (int) $obs,
-                'raw_weights'  => [
-                    'A' => round($wA, 3),
-                    'B' => round($wB, 3),
-                    'C' => round($wC, 3),
-                    'D' => round($wD, 3),
-                ],
+                'observations' => $totalObs,
+                'raw_weights'  => array_map(fn($w) => $w !== null ? round($w, 3) : null, $wAvg),
             ];
         } catch (\Exception $e) {
             return $defaults;
         }
     }
+
 }

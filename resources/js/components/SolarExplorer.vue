@@ -2,6 +2,10 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePage } from '@inertiajs/vue3'
 import GameTheoryChart from './GameTheoryChart.vue'
+import TriviaGamesTable from './TriviaGamesTable.vue'
+import TriviaRoundsTable from './TriviaRoundsTable.vue'
+import TriviaUserHistoryTable from './TriviaUserHistoryTable.vue'
+import TriviaAiModelTable from './TriviaAiModelTable.vue'
 
 const page = usePage()
 
@@ -108,7 +112,12 @@ onUnmounted(() => {
 const triviaStats = ref({})
 const recentGames = ref([])
 const userHistory = ref({})
-const inferredSliders = ref(null)
+const inferredSliders   = ref(null)
+const realStrategyData  = ref({})
+const rawGames          = ref([])
+const rawRounds         = ref([])
+const rawHistory        = ref([])
+const rawWeights        = ref([])
 
 onMounted(async () => {
   try {
@@ -120,6 +129,11 @@ onMounted(async () => {
     if (data.inferred_sliders?.observations > 0) {
       inferredSliders.value = data.inferred_sliders
     }
+    realStrategyData.value = data.real_strategy_data ?? {}
+    rawGames.value         = data.raw_games    ?? []
+    rawRounds.value        = data.raw_rounds   ?? []
+    rawHistory.value       = data.raw_history  ?? []
+    rawWeights.value       = data.raw_ai_model ?? []
   } catch (e) {}
 })
 </script>
@@ -175,13 +189,21 @@ onMounted(async () => {
 
     <div class="gt-wrapper">
       <h2 class="gt-heading">Game theory model</h2>
-      <p class="gt-intro">How the AI's strategy weights shift with each slider variable</p>
       <GameTheoryChart
         :trivia-stats="triviaStats"
         :recent-games="recentGames"
         :user-history="userHistory"
         :inferred-sliders="inferredSliders"
+        :real-strategy-data="realStrategyData"
       />
+
+      <div class="db-tables">
+        <h2 class="db-heading">Database viewer</h2>
+        <TriviaGamesTable :games="rawGames" />
+        <TriviaRoundsTable :rounds="rawRounds" />
+        <TriviaUserHistoryTable :history="rawHistory" />
+        <TriviaAiModelTable :weights="rawWeights" />
+      </div>
     </div>
   </section>
 </template>
@@ -381,9 +403,16 @@ section {
   color: oklch(var(--bc));
   margin-bottom: 0.25rem;
 }
-.gt-intro {
-  font-size: 13px;
-  color: oklch(var(--bc) / 0.5);
+
+.db-tables {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 2rem 20px 60px;
+  border-top: 0.5px solid oklch(var(--bc) / 0.1);
+}
+.db-heading {
+  font: 400 1.25rem/1.2 'DM Sans', Inter, sans-serif;
+  color: oklch(var(--bc));
   margin-bottom: 1.5rem;
 }
 
