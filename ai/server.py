@@ -40,10 +40,8 @@ import random
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'database', 'database.sqlite'
-)
+DB_PATH = os.environ.get('DB_PATH') or '/home/runner/workspace/database/database.sqlite'
+
 PORT = 5001
 
 
@@ -523,10 +521,24 @@ class AIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def redirect_to_app(self):
+        """Redirect to the main Laravel app at the bare host (port 80)."""
+        host = self.headers.get('Host', '').split(':')[0]
+        proto = self.headers.get('X-Forwarded-Proto', 'https')
+        target = f"{proto}://{host}/" if host else "/"
+        self.send_response(302)
+        self.send_header('Location', target)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path   = parsed.path
         params = parse_qs(parsed.query)
+
+        if path == '/' or path == '':
+            self.redirect_to_app()
+            return
 
         if path == '/health':
             self.send_json({'status': 'ok', 'port': PORT})
@@ -616,5 +628,6 @@ if __name__ == '__main__':
     print(f"TaskFlow AI server starting on port {PORT}...")
     load_and_train()
     print("Task model trained. Trivia AI ready.")
-    server = HTTPServer(('127.0.0.1', PORT), AIHandler)
+    HTTPServer.allow_reuse_address = True
+    server = HTTPServer(('0.0.0.0', PORT), AIHandler)
     server.serve_forever()

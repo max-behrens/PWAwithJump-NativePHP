@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <title>TriviaBluff</title>
-<link href="/css/daisyui-themes.css" rel="stylesheet">
-<link href="/css/daisyui.css" rel="stylesheet">
 <script src="/js/tailwind.js"></script>
+<link href="/css/daisyui.css" rel="stylesheet" type="text/css" />
+<script defer src="/js/alpine.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'DM Sans', sans-serif; }

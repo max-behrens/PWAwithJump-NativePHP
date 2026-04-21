@@ -6,9 +6,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>@yield('title', 'TriviaBuff')</title>
-    <link href="/css/daisyui-themes.css" rel="stylesheet">
-    <link href="/css/daisyui.css" rel="stylesheet">
     <script src="/js/tailwind.js"></script>
+    <link href="/css/daisyui.css" rel="stylesheet" type="text/css" />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="preload" as="image" href="/images/logo.png">
     <link rel="preload" as="image" href="/images/image1.jpg">
@@ -81,7 +80,7 @@
     @yield('body_content')
     @yield('fab')
 
-    <script src="/js/alpine.js" defer></script>
+    <script defer src="/js/alpine.js"></script>
     @vite(['resources/js/solar.js'])
 </body>
 </html>
