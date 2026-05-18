@@ -27,4 +27,6 @@ Route::prefix('trivia')->name('trivia.')->group(function () {
     Route::get('/result/{trivia}', [TriviaController::class, 'result'])->name('result');
 });
 
+Route::get('/rpg', fn() => view('rpg'))->name('rpg.index');
+
 Route::get('/solar', fn() => view('solar'))->name('solar.index');
